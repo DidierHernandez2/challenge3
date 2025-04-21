@@ -1,0 +1,15 @@
+package.xml
+setup.cfg
+setup.py
+../../build/control_trayectoria/control_trayectoria.egg-info/PKG-INFO
+../../build/control_trayectoria/control_trayectoria.egg-info/SOURCES.txt
+../../build/control_trayectoria/control_trayectoria.egg-info/dependency_links.txt
+../../build/control_trayectoria/control_trayectoria.egg-info/entry_points.txt
+../../build/control_trayectoria/control_trayectoria.egg-info/requires.txt
+../../build/control_trayectoria/control_trayectoria.egg-info/top_level.txt
+../../build/control_trayectoria/control_trayectoria.egg-info/zip-safe
+control_trayectoria/__init__.py
+resource/control_trayectoria
+test/test_copyright.py
+test/test_flake8.py
+test/test_pep257.py
