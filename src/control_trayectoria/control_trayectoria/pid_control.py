@@ -1,5 +1,6 @@
 import rclpy
 from rclpy.node import Node
+from std_msgs.msg import Float32
 from geometry_msgs.msg import Twist
 import math
 import time
@@ -31,68 +32,79 @@ class TrajectoryController(Node):
     def __init__(self):
         super().__init__('pid_trajectory_controller')
 
-        self.subscription = self.create_subscription(
-            Twist,
-            'cmd_vel',
-            self.cmd_vel_callback,
+        # Parámetros físicos del robot
+        self.wheel_radius = 0.033  # metros
+        self.base_width = 0.16     # distancia entre ruedas
+
+        # Subscripciones a encoders
+        self.sub_enc_l = self.create_subscription(
+            Float32,
+            'VelocityEncL',
+            self.encoder_left_callback,
+            10
+        )
+        self.sub_enc_r = self.create_subscription(
+            Float32,
+            'VelocityEncR',
+            self.encoder_right_callback,
             10
         )
 
-        self.publisher_ = self.create_publisher(Twist, 'motor_cmd', 10)
+        # Publicador del comando de velocidad
+        self.cmd_pub = self.create_publisher(Twist, 'cmd_vel', 10)
 
-        # PID para control lineal y angular
-        self.linear_pid = PIDController(1.0, 0.0, 0.1)
-        self.angular_pid = PIDController(2.0, 0.0, 0.2)
+        # Inicializar PID para cada rueda
+        self.pid_left = PIDController(1.0, 0.0, 0.1)
+        self.pid_right = PIDController(1.0, 0.0, 0.1)
 
-        self.current_step = 0
+        self.encoder_l = 0.0
+        self.encoder_r = 0.0
+
         self.start_time = self.get_clock().now().seconds_nanoseconds()[0]
-
-        # Simulaciones básicas de posición/orientación
-        self.x = 0.0
-        self.y = 0.0
-        self.theta = 0.0
-
         self.timer = self.create_timer(0.1, self.control_loop)
 
-    def cmd_vel_callback(self, msg):
-        self.desired_linear = msg.linear.x
-        self.desired_angular = msg.angular.z
+    def encoder_left_callback(self, msg):
+        self.encoder_l = msg.data
+
+    def encoder_right_callback(self, msg):
+        self.encoder_r = msg.data
 
     def control_loop(self):
         now = self.get_clock().now().seconds_nanoseconds()[0]
         elapsed = now - self.start_time
 
-        # Ejecutar trayectoria cuadrada
-        side_duration = 4  # segundos para cada lado (ajustable)
-        step = elapsed // side_duration
+        # Trayectoria cuadrada: 2m por lado
+        # Aproximamos: 10s recto (0.2 m/s), 5s giro en el lugar (pi/2 rad)
+        fase = (elapsed // 15) % 2  # 0 = avance, 1 = giro
 
-        if step != self.current_step:
-            self.get_logger().info(f"Paso {step}/4")
-            self.current_step = step
-            self.start_time = now
-
-        if step < 4:
-            linear_setpoint = 0.2  # m/s
-            angular_setpoint = 0.0
-        elif step < 8:
-            linear_setpoint = 0.0
-            angular_setpoint = math.pi / 4  # rad/s
+        if fase == 0:
+            v_d = 0.2  # m/s
+            w_d = 0.0  # rad/s
         else:
-            linear_setpoint = 0.0
-            angular_setpoint = 0.0
+            v_d = 0.0
+            w_d = math.pi / 5  # giro 90° en 5 segundos
 
-        # Simulamos "lectura" del encoder
-        linear_actual = self.desired_linear if hasattr(self, 'desired_linear') else 0.0
-        angular_actual = self.desired_angular if hasattr(self, 'desired_angular') else 0.0
+        # Calcular velocidades deseadas para cada rueda
+        v_l_d = v_d - (w_d * self.base_width / 2)
+        v_r_d = v_d + (w_d * self.base_width / 2)
 
-        # Control PID
-        v = self.linear_pid.compute(linear_setpoint, linear_actual)
-        w = self.angular_pid.compute(angular_setpoint, angular_actual)
+        # Control por rueda
+        v_l_real = self.encoder_l
+        v_r_real = self.encoder_r
+
+        vl_cmd = self.pid_left.compute(v_l_d, v_l_real)
+        vr_cmd = self.pid_right.compute(v_r_d, v_r_real)
+
+        # Convertir a Twist (inversa de la cinemática diferencial)
+        linear = (vl_cmd + vr_cmd) / 2
+        angular = (vr_cmd - vl_cmd) / self.base_width
 
         cmd = Twist()
-        cmd.linear.x = v
-        cmd.angular.z = w
-        self.publisher_.publish(cmd)
+        cmd.linear.x = linear
+        cmd.angular.z = angular
+        self.cmd_pub.publish(cmd)
+
+        self.get_logger().info(f"Fase: {fase} | v_d: {v_d:.2f}, w_d: {w_d:.2f} | v_l_real: {v_l_real:.2f}, v_r_real: {v_r_real:.2f}")
 
 def main(args=None):
     rclpy.init(args=args)
@@ -100,6 +112,3 @@ def main(args=None):
     rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()
-
-if __name__ == '__main__':
-    main()
