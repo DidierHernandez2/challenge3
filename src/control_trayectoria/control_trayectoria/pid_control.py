@@ -1,114 +1,90 @@
+# control_trayectoria/pid_control.py
+
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float32
+from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Twist
 import math
-import time
 
-class PIDController:
+class PID:
     def __init__(self, Kp, Ki, Kd):
         self.Kp = Kp
         self.Ki = Ki
         self.Kd = Kd
         self.integral = 0.0
         self.prev_error = 0.0
-        self.prev_time = time.time()
 
-    def compute(self, setpoint, actual):
-        current_time = time.time()
-        dt = current_time - self.prev_time
-        error = setpoint - actual
+    def compute(self, error, dt):
         self.integral += error * dt
         derivative = (error - self.prev_error) / dt if dt > 0 else 0.0
-
         output = self.Kp * error + self.Ki * self.integral + self.Kd * derivative
-
         self.prev_error = error
-        self.prev_time = current_time
         return output
 
-
-class TrajectoryController(Node):
+class TrajectoryPID(Node):
     def __init__(self):
-        super().__init__('pid_trajectory_controller')
-
-        # Parámetros físicos del robot
-        self.wheel_radius = 0.033  # metros
-        self.base_width = 0.16     # distancia entre ruedas
-
-        # Subscripciones a encoders
-        self.sub_enc_l = self.create_subscription(
-            Float32,
-            'VelocityEncL',
-            self.encoder_left_callback,
-            10
-        )
-        self.sub_enc_r = self.create_subscription(
-            Float32,
-            'VelocityEncR',
-            self.encoder_right_callback,
-            10
-        )
-
-        # Publicador del comando de velocidad
+        super().__init__('pid_control')
+        
         self.cmd_pub = self.create_publisher(Twist, 'cmd_vel', 10)
+        self.odom_sub = self.create_subscription(Odometry, 'odom', self.odom_callback, 10)
 
-        # Inicializar PID para cada rueda
-        self.pid_left = PIDController(1.0, 0.0, 0.1)
-        self.pid_right = PIDController(1.0, 0.0, 0.1)
+        self.timer = self.create_timer(0.05, self.control_loop)
 
-        self.encoder_l = 0.0
-        self.encoder_r = 0.0
+        self.pose = {'x': 0.0, 'y': 0.0, 'theta': 0.0}
+        self.goals = [
+            {'x': 2.0, 'y': 0.0},
+            {'x': 2.0, 'y': 2.0},
+            {'x': 0.0, 'y': 2.0},
+            {'x': 0.0, 'y': 0.0}
+        ]
+        self.current_goal = 0
 
-        self.start_time = self.get_clock().now().seconds_nanoseconds()[0]
-        self.timer = self.create_timer(0.1, self.control_loop)
+        self.pid_linear = PID(1.0, 0.0, 0.2)
+        self.pid_angular = PID(4.0, 0.0, 0.3)
 
-    def encoder_left_callback(self, msg):
-        self.encoder_l = msg.data
+        self.last_time = self.get_clock().now().nanoseconds / 1e9
 
-    def encoder_right_callback(self, msg):
-        self.encoder_r = msg.data
+    def odom_callback(self, msg):
+        self.pose['x'] = msg.pose.pose.position.x
+        self.pose['y'] = msg.pose.pose.position.y
+
+        q = msg.pose.pose.orientation
+        siny_cosp = 2 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
+        self.pose['theta'] = math.atan2(siny_cosp, cosy_cosp)
 
     def control_loop(self):
-        now = self.get_clock().now().seconds_nanoseconds()[0]
-        elapsed = now - self.start_time
+        now = self.get_clock().now().nanoseconds / 1e9
+        dt = now - self.last_time
+        self.last_time = now
 
-        # Trayectoria cuadrada: 2m por lado
-        # Aproximamos: 10s recto (0.2 m/s), 5s giro en el lugar (pi/2 rad)
-        fase = (elapsed // 15) % 2  # 0 = avance, 1 = giro
+        goal = self.goals[self.current_goal]
+        dx = goal['x'] - self.pose['x']
+        dy = goal['y'] - self.pose['y']
+        distance = math.hypot(dx, dy)
+        angle_to_goal = math.atan2(dy, dx)
+        angle_error = self.normalize_angle(angle_to_goal - self.pose['theta'])
 
-        if fase == 0:
-            v_d = 0.2  # m/s
-            w_d = 0.0  # rad/s
+        twist = Twist()
+
+        if distance > 0.1:
+            twist.linear.x = self.pid_linear.compute(distance, dt)
+            twist.angular.z = self.pid_angular.compute(angle_error, dt)
         else:
-            v_d = 0.0
-            w_d = math.pi / 5  # giro 90° en 5 segundos
+            self.current_goal = (self.current_goal + 1) % len(self.goals)
 
-        # Calcular velocidades deseadas para cada rueda
-        v_l_d = v_d - (w_d * self.base_width / 2)
-        v_r_d = v_d + (w_d * self.base_width / 2)
+        self.cmd_pub.publish(twist)
 
-        # Control por rueda
-        v_l_real = self.encoder_l
-        v_r_real = self.encoder_r
-
-        vl_cmd = self.pid_left.compute(v_l_d, v_l_real)
-        vr_cmd = self.pid_right.compute(v_r_d, v_r_real)
-
-        # Convertir a Twist (inversa de la cinemática diferencial)
-        linear = (vl_cmd + vr_cmd) / 2
-        angular = (vr_cmd - vl_cmd) / self.base_width
-
-        cmd = Twist()
-        cmd.linear.x = linear
-        cmd.angular.z = angular
-        self.cmd_pub.publish(cmd)
-
-        self.get_logger().info(f"Fase: {fase} | v_d: {v_d:.2f}, w_d: {w_d:.2f} | v_l_real: {v_l_real:.2f}, v_r_real: {v_r_real:.2f}")
+    def normalize_angle(self, angle):
+        while angle > math.pi:
+            angle -= 2 * math.pi
+        while angle < -math.pi:
+            angle += 2 * math.pi
+        return angle
 
 def main(args=None):
     rclpy.init(args=args)
-    node = TrajectoryController()
+    node = TrajectoryPID()
     rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()
