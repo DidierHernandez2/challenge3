@@ -1,11 +1,11 @@
-from setuptools import setup
+from setuptools import find_packages, setup
 
 package_name = 'control_trayectoria'
 
 setup(
     name=package_name,
-    version='0.0.1',
-    packages=[package_name],
+    version='0.0.0',
+    packages=find_packages(exclude=['test']),
     data_files=[
         ('share/' + package_name + '/launch', ['launch/control.launch.py']),
         ('share/' + package_name + '/config', ['config/params.yaml']),
@@ -13,10 +13,10 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='TuNombre',
-    maintainer_email='tunombre@correo.com',
-    description='Controlador PID para trayectoria cuadrada en Puzzlebot',
-    license='MIT',
+    maintainer='puzzlebot',
+    maintainer_email='puzzlebot@todo.todo',
+    description='TODO: Package description',
+    license='TODO: License declaration',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
