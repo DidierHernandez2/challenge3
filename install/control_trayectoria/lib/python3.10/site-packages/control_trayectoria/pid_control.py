@@ -1,128 +1,111 @@
+import math
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
-import math
+
 
 class PIDSquareController(Node):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__('pid_square_controller')
 
-        # Parámetros PID para control angular
-        self.kp_ang = 2.0
-        self.ki_ang = 0.0
-        self.kd_ang = 0.1
+        # ——— PID gains ———
+        self.kp_ang, self.ki_ang, self.kd_ang = 2.0, 0.0, 0.10
+        self.kp_lin, self.ki_lin, self.kd_lin = 0.8, 0.0, 0.05
 
-        # Parámetros PID para control lineal
-        self.kp_lin = 0.8
-        self.ki_lin = 0.0
-        self.kd_lin = 0.05
+        # ——— Robot state ———
+        self.xr = self.yr = self.thetar = 0.0
 
-        # Estados internos del robot
-        self.xr = 0.0
-        self.yr = 0.0
-        self.thetar = 0.0
+        # ——— PID memory ———
+        self.integral_ang = self.integral_lin = 0.0
+        self.prev_error_ang = self.prev_error_lin = 0.0
 
-        self.integral_ang = 0.0
-        self.prev_error_ang = 0.0
-
-        self.integral_lin = 0.0
-        self.prev_error_lin = 0.0
-
-        # Waypoints para la trayectoria cuadrada
-        self.waypoints = [
-            (2.0, 0.0),
-            (2.0, 2.0),
-            (0.0, 2.0),
-            (0.0, 0.0)
-        ]
+        # ——— Trajectory: square 2 m × 2 m ———
+        self.waypoints = [(2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]
         self.current_index = 0
 
-        # Publicador y suscriptor
+        # ——— ROS I/O ———
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
-        self.sub_odom = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
+        self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
 
-        # Temporizador
-        self.timer = self.create_timer(0.1, self.control_loop)
+        # Control period
+        self.dt = 0.1
+        self.create_timer(self.dt, self.control_loop)
 
-    def odom_callback(self, msg):
+    # ----------------- Callbacks -----------------
+    def odom_callback(self, msg: Odometry) -> None:
         self.xr = msg.pose.pose.position.x
         self.yr = msg.pose.pose.position.y
+        self.thetar = self.quat_to_yaw(msg.pose.pose.orientation)
 
-        q = msg.pose.pose.orientation
-        _, _, self.thetar = self.euler_from_quaternion(q.x, q.y, q.z, q.w)
+    # ----------------- Helpers -----------------
+    @staticmethod
+    def quat_to_yaw(q) -> float:
+        siny = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        return math.atan2(siny, cosy)
 
-    def euler_from_quaternion(self, x, y, z, w):
-        # Convierte un quaternion a ángulos de Euler
-        t3 = +2.0 * (w * z + x * y)
-        t4 = +1.0 - 2.0 * (y * y + z * z)
-        yaw = math.atan2(t3, t4)
-        return 0.0, 0.0, yaw
+    @staticmethod
+    def normalize(angle: float) -> float:
+        """Wrap to (-π, π] with trig magic."""
+        return math.atan2(math.sin(angle), math.cos(angle))
 
-    def control_loop(self):
+    # ----------------- PID cores -----------------
+    def pid_linear(self, err: float) -> float:
+        self.integral_lin += err * self.dt
+        der = (err - self.prev_error_lin) / self.dt
+        self.prev_error_lin = err
+        return self.kp_lin * err + self.ki_lin * self.integral_lin + self.kd_lin * der
+
+    def pid_angular(self, err: float) -> float:
+        self.integral_ang += err * self.dt
+        der = (err - self.prev_error_ang) / self.dt
+        self.prev_error_ang = err
+        return self.kp_ang * err + self.ki_ang * self.integral_ang + self.kd_ang * der
+
+    # ----------------- Main control loop -----------------
+    def control_loop(self) -> None:
         if self.current_index >= len(self.waypoints):
             self.stop_robot()
             return
 
-        goal_x, goal_y = self.waypoints[self.current_index]
-        dx = goal_x - self.xr
-        dy = goal_y - self.yr
-
+        gx, gy = self.waypoints[self.current_index]
+        dx, dy = gx - self.xr, gy - self.yr
         rho = math.hypot(dx, dy)
-        angle_to_goal = math.atan2(dy, dx)
-        alpha = self.normalize_angle(angle_to_goal - self.thetar)
 
-        # Fase de alineación primero si no estamos bien orientados
-        if abs(alpha) > 0.2:
-            v = 0.0
-            w = self.pid_angular(alpha)
+        desired_theta = math.atan2(dy, dx)
+        alpha = self.normalize(desired_theta - self.thetar)
+
+        # 1) Gira hasta estar alineado, 2) avanza
+        if abs(alpha) > 0.20:
+            v, w = 0.0, self.pid_angular(alpha)
         else:
-            v = self.pid_linear(rho)
-            w = self.pid_angular(alpha)
+            v, w = self.pid_linear(rho), self.pid_angular(alpha)
 
+        # Saturación prudente
         cmd = Twist()
-        cmd.linear.x = max(min(v, 0.3), -0.3)
-        cmd.angular.z = max(min(w, 1.0), -1.0)
+        cmd.linear.x = max(min(v, 0.30), -0.30)
+        cmd.angular.z = max(min(w, 1.00), -1.00)
         self.cmd_pub.publish(cmd)
 
-        if rho < 0.1:
-            self.get_logger().info(f"Waypoint {self.current_index} alcanzado.")
+        # ¿Llegamos?
+        if rho < 0.05:
+            self.get_logger().info(f'Waypoint {self.current_index} alcanzado.')
             self.current_index += 1
-            self.reset_integrals()
+            self.reset_pid()
 
-    def pid_linear(self, error):
-        self.integral_lin += error
-        derivative = error - self.prev_error_lin
-        output = self.kp_lin * error + self.ki_lin * self.integral_lin + self.kd_lin * derivative
-        self.prev_error_lin = error
-        return output
+    # ----------------- Utilities -----------------
+    def reset_pid(self) -> None:
+        self.integral_lin = self.integral_ang = 0.0
+        self.prev_error_lin = self.prev_error_ang = 0.0
 
-    def pid_angular(self, error):
-        self.integral_ang += error
-        derivative = error - self.prev_error_ang
-        output = self.kp_ang * error + self.ki_ang * self.integral_ang + self.kd_ang * derivative
-        self.prev_error_ang = error
-        return output
+    def stop_robot(self) -> None:
+        self.cmd_pub.publish(Twist())   # envía ceros
+        self.get_logger().info('Trayectoria completada. ¡Hora del café!')
 
-    def normalize_angle(self, angle):
-        while angle > math.pi:
-            angle -= 2.0 * math.pi
-        while angle < -math.pi:
-            angle += 2.0 * math.pi
-        return angle
 
-    def reset_integrals(self):
-        self.integral_lin = 0.0
-        self.prev_error_lin = 0.0
-        self.integral_ang = 0.0
-        self.prev_error_ang = 0.0
-
-    def stop_robot(self):
-        cmd = Twist()
-        self.cmd_pub.publish(cmd)
-        self.get_logger().info("Trayectoria completada.")
-
-def main(args=None):
+# ----------------- Main entry -----------------
+def main(args=None) -> None:
     rclpy.init(args=args)
     node = PIDSquareController()
     rclpy.spin(node)
