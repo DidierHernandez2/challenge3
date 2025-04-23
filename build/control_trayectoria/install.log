@@ -1,6 +1,9 @@
+/home/darhf/Manchester/challenge3/install/control_trayectoria/lib/python3.10/site-packages/control_trayectoria/pid_control.py
 /home/darhf/Manchester/challenge3/install/control_trayectoria/lib/python3.10/site-packages/control_trayectoria/__init__.py
+/home/darhf/Manchester/challenge3/install/control_trayectoria/lib/python3.10/site-packages/control_trayectoria/__pycache__/pid_control.cpython-310.pyc
 /home/darhf/Manchester/challenge3/install/control_trayectoria/lib/python3.10/site-packages/control_trayectoria/__pycache__/__init__.cpython-310.pyc
-/home/darhf/Manchester/challenge3/install/control_trayectoria/share/ament_index/resource_index/packages/control_trayectoria
+/home/darhf/Manchester/challenge3/install/control_trayectoria/share/control_trayectoria/launch/control.launch.py
+/home/darhf/Manchester/challenge3/install/control_trayectoria/share/control_trayectoria/config/params.yaml
 /home/darhf/Manchester/challenge3/install/control_trayectoria/share/control_trayectoria/package.xml
 /home/darhf/Manchester/challenge3/install/control_trayectoria/lib/python3.10/site-packages/control_trayectoria-0.0.0-py3.10.egg-info/dependency_links.txt
 /home/darhf/Manchester/challenge3/install/control_trayectoria/lib/python3.10/site-packages/control_trayectoria-0.0.0-py3.10.egg-info/SOURCES.txt
@@ -9,3 +12,4 @@
 /home/darhf/Manchester/challenge3/install/control_trayectoria/lib/python3.10/site-packages/control_trayectoria-0.0.0-py3.10.egg-info/zip-safe
 /home/darhf/Manchester/challenge3/install/control_trayectoria/lib/python3.10/site-packages/control_trayectoria-0.0.0-py3.10.egg-info/entry_points.txt
 /home/darhf/Manchester/challenge3/install/control_trayectoria/lib/python3.10/site-packages/control_trayectoria-0.0.0-py3.10.egg-info/PKG-INFO
+/home/darhf/Manchester/challenge3/install/control_trayectoria/lib/control_trayectoria/pid_control

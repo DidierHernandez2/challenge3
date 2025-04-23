@@ -8,7 +8,10 @@ setup.py
 ../../build/control_trayectoria/control_trayectoria.egg-info/requires.txt
 ../../build/control_trayectoria/control_trayectoria.egg-info/top_level.txt
 ../../build/control_trayectoria/control_trayectoria.egg-info/zip-safe
+config/params.yaml
 control_trayectoria/__init__.py
+control_trayectoria/pid_control.py
+launch/control.launch.py
 resource/control_trayectoria
 test/test_copyright.py
 test/test_flake8.py
