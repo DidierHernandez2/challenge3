@@ -1,106 +1,104 @@
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, QoSDurabilityPolicy
 from std_msgs.msg import Float32
 from geometry_msgs.msg import Twist
 import math
+import numpy as np
 
 class PIDController(Node):
+
     def __init__(self):
         super().__init__('pid_control_node')
 
-        # QoS para datos de sensores
-        sensor_qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            durability=QoSDurabilityPolicy.VOLATILE,
-            depth=10
-        )
+        # Parámetros físicos del robot
+        self.L = 0.18  # distancia entre ruedas (m)
+        self.R = 0.05  # radio de las ruedas (m)
+        self.dt = 0.1  # periodo de muestreo (s)
 
-        # Variables del robot
-        self.r = 0.05  # radio de rueda [m]
-        self.l = 0.18  # distancia entre ruedas [m]
-
-        # Estado actual
-        self.vl = 0.0
-        self.vr = 0.0
-        self.theta_servo = 0.0
+        # Estado del robot
         self.x = 0.0
         self.y = 0.0
         self.theta = 0.0
 
-        # Controlador PID
-        self.kp_rho = 1.5
-        self.kp_alpha = 4.0
-        self.kp_beta = -1.5
+        # Velocidades angulares de las ruedas
+        self.wl = 0.0
+        self.wr = 0.0
 
-        # Waypoints del cuadrado
-        self.waypoints = [
-            (2.0, 0.0),
-            (2.0, 2.0),
-            (0.0, 2.0),
-            (0.0, 0.0)
-        ]
-        self.current_goal_index = 0
+        # Subscripciones a encoders
+        self.create_subscription(Float32, '/VelocityEncL', self.wl_callback, 10)
+        self.create_subscription(Float32, '/VelocityEncR', self.wr_callback, 10)
 
-        # Subscribers
-        self.create_subscription(Float32, '/VelocityEncL', self.vl_callback, sensor_qos)
-        self.create_subscription(Float32, '/VelocityEncR', self.vr_callback, sensor_qos)
-        self.create_subscription(Float32, '/ServoAngle', self.servo_callback, sensor_qos)
-
-        # Publisher
+        # Publicador de velocidades
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
 
-        # Timer
-        self.create_timer(0.1, self.control_loop)  # 10 Hz
+        # PID para orientación
+        self.kp_ang = 4.0
+        self.ki_ang = 0.0
+        self.kd_ang = 0.1
+        self.integral_ang = 0.0
+        self.prev_ang_error = 0.0
 
-    def vl_callback(self, msg):
-        self.vl = msg.data
+        # Waypoints
+        self.waypoints = [[2, 0], [2, 2], [0, 2], [0, 0]]
+        self.current_wp = 0
 
-    def vr_callback(self, msg):
-        self.vr = msg.data
+        # Timer de control
+        self.create_timer(self.dt, self.control_loop)
 
-    def servo_callback(self, msg):
-        self.theta_servo = msg.data
+    def wl_callback(self, msg):
+        self.wl = msg.data
+
+    def wr_callback(self, msg):
+        self.wr = msg.data
+
+    def update_odometry(self):
+        # Velocidades tangenciales
+        v_l = self.R * self.wl
+        v_r = self.R * self.wr
+
+        # Cinemática diferencial
+        v = (v_r + v_l) / 2.0
+        w = (v_r - v_l) / self.L
+
+        # Actualización de pose
+        self.x += v * math.cos(self.theta) * self.dt
+        self.y += v * math.sin(self.theta) * self.dt
+        self.theta += w * self.dt
+        self.theta = self.normalize_angle(self.theta)
 
     def control_loop(self):
-        # Actualiza odometría
-        dt = 0.1
-        v = (self.r / 2.0) * (self.vr + self.vl)
-        w = (self.r / self.l) * (self.vr - self.vl)
+        self.update_odometry()
 
-        self.theta += w * dt
-        self.theta = self.normalize_angle(self.theta)
-        self.x += v * math.cos(self.theta) * dt
-        self.y += v * math.sin(self.theta) * dt
-
-        if self.current_goal_index >= len(self.waypoints):
+        if self.current_wp >= len(self.waypoints):
             self.stop_robot()
             return
 
-        goal_x, goal_y = self.waypoints[self.current_goal_index]
+        goal_x, goal_y = self.waypoints[self.current_wp]
         dx = goal_x - self.x
         dy = goal_y - self.y
-
         rho = math.hypot(dx, dy)
-        alpha = self.normalize_angle(math.atan2(dy, dx) - self.theta)
-        beta = self.normalize_angle(-self.theta - alpha)
+        angle_to_goal = math.atan2(dy, dx)
+        angle_error = self.normalize_angle(angle_to_goal - self.theta)
 
-        # Ley de control de pose polar
-        v_cmd = self.kp_rho * rho
-        w_cmd = self.kp_alpha * alpha + self.kp_beta * beta
+        # PID Angular
+        self.integral_ang += angle_error * self.dt
+        derivative = (angle_error - self.prev_ang_error) / self.dt
+        w = self.kp_ang * angle_error + self.ki_ang * self.integral_ang + self.kd_ang * derivative
+        self.prev_ang_error = angle_error
 
-        # Saturación
-        v_cmd = max(min(v_cmd, 0.3), -0.3)
-        w_cmd = max(min(w_cmd, 1.5), -1.5)
+        # Velocidad lineal (avanza solo si está alineado)
+        v = 0.3 * rho if abs(angle_error) < 0.2 else 0.0
 
+        # Publicar velocidades
         cmd = Twist()
-        cmd.linear.x = v_cmd
-        cmd.angular.z = w_cmd
+        cmd.linear.x = v
+        cmd.angular.z = w
         self.cmd_pub.publish(cmd)
 
+        # Chequeo para avanzar al siguiente waypoint
         if rho < 0.1:
-            self.current_goal_index += 1
-            self.get_logger().info(f"Waypoint {self.current_goal_index} alcanzado.")
+            self.current_wp += 1
+            self.get_logger().info(f"Waypoint {self.current_wp} alcanzado.")
 
     def stop_robot(self):
         cmd = Twist()
@@ -108,11 +106,7 @@ class PIDController(Node):
         self.get_logger().info("Todos los waypoints alcanzados.")
 
     def normalize_angle(self, angle):
-        while angle > math.pi:
-            angle -= 2.0 * math.pi
-        while angle < -math.pi:
-            angle += 2.0 * math.pi
-        return angle
+        return math.atan2(math.sin(angle), math.cos(angle))
 
 def main(args=None):
     rclpy.init(args=args)
@@ -120,6 +114,3 @@ def main(args=None):
     rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()
-
-if __name__ == '__main__':
-    main()
