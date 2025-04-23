@@ -1,90 +1,89 @@
-# control_trayectoria/pid_control.py
-
 import rclpy
 from rclpy.node import Node
-from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Twist
 import math
 
-class PID:
-    def __init__(self, Kp, Ki, Kd):
-        self.Kp = Kp
-        self.Ki = Ki
-        self.Kd = Kd
-        self.integral = 0.0
+class ControllerNode(Node):
+    def __init__(self):
+        super().__init__('controller')
+
+        # Parámetros del PID
+        self.kp = 1.5
+        self.ki = 0.0
+        self.kd = 0.1
+
+        # Estado inicial
+        self.xr, self.yr, self.thetar = 0.0, 0.0, 0.0
+        self.integral_error = 0.0
         self.prev_error = 0.0
 
-    def compute(self, error, dt):
-        self.integral += error * dt
-        derivative = (error - self.prev_error) / dt if dt > 0 else 0.0
-        output = self.Kp * error + self.Ki * self.integral + self.Kd * derivative
-        self.prev_error = error
-        return output
-
-class TrajectoryPID(Node):
-    def __init__(self):
-        super().__init__('pid_control')
-        
-        self.cmd_pub = self.create_publisher(Twist, 'cmd_vel', 10)
-        self.odom_sub = self.create_subscription(Odometry, 'odom', self.odom_callback, 10)
-
-        self.timer = self.create_timer(0.05, self.control_loop)
-
-        self.pose = {'x': 0.0, 'y': 0.0, 'theta': 0.0}
-        self.goals = [
-            {'x': 2.0, 'y': 0.0},
-            {'x': 2.0, 'y': 2.0},
-            {'x': 0.0, 'y': 2.0},
-            {'x': 0.0, 'y': 0.0}
+        # Lista de waypoints [x, y]
+        self.waypoints = [
+            [2.0, 0.0],  # Derecha
+            [2.0, 2.0],  # Arriba
+            [0.0, 2.0],  # Izquierda
+            [0.0, 0.0]   # Abajo (cierra el cuadrado)
         ]
-        self.current_goal = 0
+        self.current_index = 0
 
-        self.pid_linear = PID(1.0, 0.0, 0.2)
-        self.pid_angular = PID(4.0, 0.0, 0.3)
+        # Publicador a /cmd_vel
+        self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
 
-        self.last_time = self.get_clock().now().nanoseconds / 1e9
-
-    def odom_callback(self, msg):
-        self.pose['x'] = msg.pose.pose.position.x
-        self.pose['y'] = msg.pose.pose.position.y
-
-        q = msg.pose.pose.orientation
-        siny_cosp = 2 * (q.w * q.z + q.x * q.y)
-        cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
-        self.pose['theta'] = math.atan2(siny_cosp, cosy_cosp)
+        # Timer de control
+        timer_period = 0.1  # 10 Hz
+        self.timer = self.create_timer(timer_period, self.control_loop)
 
     def control_loop(self):
-        now = self.get_clock().now().nanoseconds / 1e9
-        dt = now - self.last_time
-        self.last_time = now
+        if self.current_index >= len(self.waypoints):
+            self.stop_robot()
+            return
 
-        goal = self.goals[self.current_goal]
-        dx = goal['x'] - self.pose['x']
-        dy = goal['y'] - self.pose['y']
-        distance = math.hypot(dx, dy)
+        goal = self.waypoints[self.current_index]
+        dx = goal[0] - self.xr
+        dy = goal[1] - self.yr
+
+        rho = math.hypot(dx, dy)  # distancia al objetivo
         angle_to_goal = math.atan2(dy, dx)
-        angle_error = self.normalize_angle(angle_to_goal - self.pose['theta'])
+        alpha = self.normalize_angle(angle_to_goal - self.thetar)
 
-        twist = Twist()
+        # Controlador PID simple (solo proporcional en distancia, PID en ángulo)
+        v = 0.5 * rho
+        error = alpha
+        self.integral_error += error
+        derivative = error - self.prev_error
+        w = self.kp * error + self.ki * self.integral_error + self.kd * derivative
+        self.prev_error = error
 
-        if distance > 0.1:
-            twist.linear.x = self.pid_linear.compute(distance, dt)
-            twist.angular.z = self.pid_angular.compute(angle_error, dt)
-        else:
-            self.current_goal = (self.current_goal + 1) % len(self.goals)
+        # Comando de velocidad
+        cmd = Twist()
+        cmd.linear.x = v
+        cmd.angular.z = w
+        self.cmd_vel_pub.publish(cmd)
 
-        self.cmd_pub.publish(twist)
+        # Simulación de avance (opcional si no tienes odometría)
+        self.xr += v * math.cos(self.thetar) * 0.1
+        self.yr += v * math.sin(self.thetar) * 0.1
+        self.thetar += w * 0.1
+
+        if rho < 0.1:
+            self.current_index += 1
+            self.get_logger().info(f"Waypoint {self.current_index} alcanzado.")
+
+    def stop_robot(self):
+        cmd = Twist()
+        self.cmd_vel_pub.publish(cmd)
+        self.get_logger().info("Todos los waypoints alcanzados.")
 
     def normalize_angle(self, angle):
         while angle > math.pi:
-            angle -= 2 * math.pi
+            angle -= 2*math.pi
         while angle < -math.pi:
-            angle += 2 * math.pi
+            angle += 2*math.pi
         return angle
 
 def main(args=None):
     rclpy.init(args=args)
-    node = TrajectoryPID()
+    node = ControllerNode()
     rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()
