@@ -1,0 +1,24 @@
+[0.571s] Invoking command in '/home/darhf/Manchester/challenge3/src/control_trayectoria': PYTHONPATH=/home/darhf/Manchester/challenge3/build/control_trayectoria/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/darhf/Manchester/challenge3/install/control_trayectoria/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../build/control_trayectoria build --build-base /home/darhf/Manchester/challenge3/build/control_trayectoria/build install --record /home/darhf/Manchester/challenge3/build/control_trayectoria/install.log --single-version-externally-managed install_data
+[0.783s] running egg_info
+[0.784s] writing ../../build/control_trayectoria/control_trayectoria.egg-info/PKG-INFO
+[0.784s] writing dependency_links to ../../build/control_trayectoria/control_trayectoria.egg-info/dependency_links.txt
+[0.784s] writing entry points to ../../build/control_trayectoria/control_trayectoria.egg-info/entry_points.txt
+[0.784s] writing requirements to ../../build/control_trayectoria/control_trayectoria.egg-info/requires.txt
+[0.784s] writing top-level names to ../../build/control_trayectoria/control_trayectoria.egg-info/top_level.txt
+[0.785s] reading manifest file '../../build/control_trayectoria/control_trayectoria.egg-info/SOURCES.txt'
+[0.786s] writing manifest file '../../build/control_trayectoria/control_trayectoria.egg-info/SOURCES.txt'
+[0.786s] running build
+[0.787s] running build_py
+[0.787s] copying control_trayectoria/pid_control.py -> /home/darhf/Manchester/challenge3/build/control_trayectoria/build/lib/control_trayectoria
+[0.787s] running install
+[0.787s] running install_lib
+[0.787s] copying /home/darhf/Manchester/challenge3/build/control_trayectoria/build/lib/control_trayectoria/pid_control.py -> /home/darhf/Manchester/challenge3/install/control_trayectoria/lib/python3.10/site-packages/control_trayectoria
+[0.788s] byte-compiling /home/darhf/Manchester/challenge3/install/control_trayectoria/lib/python3.10/site-packages/control_trayectoria/pid_control.py to pid_control.cpython-310.pyc
+[0.789s] running install_data
+[0.789s] running install_egg_info
+[0.790s] removing '/home/darhf/Manchester/challenge3/install/control_trayectoria/lib/python3.10/site-packages/control_trayectoria-0.0.0-py3.10.egg-info' (and everything under it)
+[0.791s] Copying ../../build/control_trayectoria/control_trayectoria.egg-info to /home/darhf/Manchester/challenge3/install/control_trayectoria/lib/python3.10/site-packages/control_trayectoria-0.0.0-py3.10.egg-info
+[0.791s] running install_scripts
+[0.809s] Installing pid_control script to /home/darhf/Manchester/challenge3/install/control_trayectoria/lib/control_trayectoria
+[0.809s] writing list of installed files to '/home/darhf/Manchester/challenge3/build/control_trayectoria/install.log'
+[0.839s] Invoked command in '/home/darhf/Manchester/challenge3/src/control_trayectoria' returned '0': PYTHONPATH=/home/darhf/Manchester/challenge3/build/control_trayectoria/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/darhf/Manchester/challenge3/install/control_trayectoria/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../build/control_trayectoria build --build-base /home/darhf/Manchester/challenge3/build/control_trayectoria/build install --record /home/darhf/Manchester/challenge3/build/control_trayectoria/install.log --single-version-externally-managed install_data
