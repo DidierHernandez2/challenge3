@@ -3,129 +3,147 @@ import numpy as np
 from rclpy.node import Node
 from std_msgs.msg import Float32
 from geometry_msgs.msg import Twist
-from rclpy import qos  # Importar qos como en el código de odometría
-
+from rclpy.qos import qos_profile_sensor_data
+import traceback
 
 class PIDController(Node):
     def __init__(self):
         super().__init__('pid_control_node')
 
         # Parámetros del robot
-        self.r = 0.05   # Radio de la rueda (m)
+        self.r = 0.05   # Radio de rueda (m)
         self.l = 0.18   # Distancia entre ruedas (m)
-        self.rate_hz = 100
-        self.dt = 1.0 / self.rate_hz
 
-        # Estado del robot
+        # Estados del robot
         self.X = 0.0
         self.Y = 0.0
         self.Th = 0.0
-        self.v_r = 0.0
-        self.v_l = 0.0
 
-        # Waypoints (trayectoria cuadrada de 2m)
-        self.goals = [(2, 0), (2, 2), (0, 2), (0, 0)]
-        self.current_goal_index = 0
+        # Encoder velocities (m/s), inicializamos a None hasta recibir la 1ª lectura
+        self.v_r = None
+        self.v_l = None
 
-        # Errores para PID
+        # Waypoints de la trayectoria (cuadrado 2×2)
+        self.goals = [(2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]
+        self.goal_idx = 0
+
+        # Errores PID
         self.e_dist_prev = 0.0
         self.sum_e_dist = 0.0
         self.e_ang_prev = 0.0
         self.sum_e_ang = 0.0
 
         # Ganancias PID
-        self.Kp_dist = 1.5
-        self.Ki_dist = 0.0
-        self.Kd_dist = 0.1
+        self.Kp_dist, self.Ki_dist, self.Kd_dist = 1.5, 0.0, 0.1
+        self.Kp_ang,  self.Ki_ang,  self.Kd_ang  = 4.0, 0.0, 0.1
 
-        self.Kp_ang = 4.0
-        self.Ki_ang = 0.0
-        self.Kd_ang = 0.1
+        # QoS y subscripciones
+        self.create_subscription(Float32, 'VelocityEncR', self.cb_enc_r, qos_profile_sensor_data)
+        self.create_subscription(Float32, 'VelocityEncL', self.cb_enc_l, qos_profile_sensor_data)
 
-        # Suscripciones a los encoders con el QoS estilo odometría
-        self.sub_encR = self.create_subscription(Float32, 'VelocityEncR', self.enc_r_cb, qos.qos_profile_sensor_data)
-        self.sub_encL = self.create_subscription(Float32, 'VelocityEncL', self.enc_l_cb, qos.qos_profile_sensor_data)
-
-        # Publicador de velocidades
+        # Publicador de cmd_vel
         self.cmd_pub = self.create_publisher(Twist, 'cmd_vel', 10)
 
-        # Temporizador principal
-        self.timer = self.create_timer(self.dt, self.control_loop)
+        # Control loop a 20 Hz (más suave para Jetson)
+        self.timer = self.create_timer(1.0/20.0, self.control_loop)
 
         self.get_logger().info("PID controller started.")
 
-    def enc_r_cb(self, msg):
+    def cb_enc_r(self, msg: Float32):
         self.v_r = self.r * msg.data
 
-    def enc_l_cb(self, msg):
+    def cb_enc_l(self, msg: Float32):
         self.v_l = self.r * msg.data
 
-    def update_odometry(self):
-        V = 0.5 * (self.v_r + self.v_l)
-        Omega = (1.0 / self.l) * (self.v_r - self.v_l)
-
-        self.X += V * np.cos(self.Th) * self.dt
-        self.Y += V * np.sin(self.Th) * self.dt
-        self.Th += Omega * self.dt
+    def normalize_angle(self, a):
+        return np.arctan2(np.sin(a), np.cos(a))
 
     def control_loop(self):
-        self.update_odometry()
+        try:
+            # Esperar a la 1ª lectura de encoders
+            if self.v_r is None or self.v_l is None:
+                self.get_logger().warn("Esperando encoders…")
+                return
 
-        # Obtener objetivo actual
-        goal_x, goal_y = self.goals[self.current_goal_index]
-        dx = goal_x - self.X
-        dy = goal_y - self.Y
-        distance = np.hypot(dx, dy)
-        angle_to_goal = np.arctan2(dy, dx)
-        angle_error = self.normalize_angle(angle_to_goal - self.Th)
+            # Calcular dt real
+            now = self.get_clock().now()
+            if not hasattr(self, 'last_time'):
+                self.last_time = now
+                return
+            dt = (now - self.last_time).nanoseconds * 1e-9
+            self.last_time = now
+            if dt <= 0.0:
+                return
 
-        # PID para distancia
-        self.sum_e_dist += distance * self.dt
-        d_dist = (distance - self.e_dist_prev) / self.dt
-        v = self.Kp_dist * distance + self.Ki_dist * self.sum_e_dist + self.Kd_dist * d_dist
+            # --- 1) Actualizar odometría ---
+            V = 0.5 * (self.v_r + self.v_l)
+            Omega = (1.0 / self.l) * (self.v_r - self.v_l)
+            self.X  += V * np.cos(self.Th) * dt
+            self.Y  += V * np.sin(self.Th) * dt
+            self.Th += Omega * dt
 
-        # PID para orientación
-        self.sum_e_ang += angle_error * self.dt
-        d_ang = (angle_error - self.e_ang_prev) / self.dt
-        w = self.Kp_ang * angle_error + self.Ki_ang * self.sum_e_ang + self.Kd_ang * d_ang
+            # --- 2) Cálculo de error frente al objetivo actual ---
+            gx, gy = self.goals[self.goal_idx]
+            dx = gx - self.X
+            dy = gy - self.Y
+            dist = np.hypot(dx, dy)
+            ang  = np.arctan2(dy, dx)
+            e_ang = self.normalize_angle(ang - self.Th)
 
-        self.e_dist_prev = distance
-        self.e_ang_prev = angle_error
+            # --- 3) PID distancia ---
+            self.sum_e_dist += dist * dt
+            d_dist = (dist - self.e_dist_prev) / dt
+            u_dist = self.Kp_dist*dist + self.Ki_dist*self.sum_e_dist + self.Kd_dist*d_dist
+            self.e_dist_prev = dist
 
-        # Llegada al objetivo
-        if distance < 0.05:
-            self.get_logger().info(f"Goal {self.current_goal_index+1} reached!")
-            self.current_goal_index += 1
-            if self.current_goal_index >= len(self.goals):
-                self.get_logger().info("Trajectory complete. Resetting.")
-                self.current_goal_index = 0
-                v = 0.0
-                w = 0.0
+            # --- 4) PID orientación ---
+            self.sum_e_ang += e_ang * dt
+            d_ang = (e_ang - self.e_ang_prev) / dt
+            u_ang = self.Kp_ang*e_ang + self.Ki_ang*self.sum_e_ang + self.Kd_ang*d_ang
+            self.e_ang_prev = e_ang
 
-        # Saturación de velocidades
-        v = np.clip(v, -0.4, 0.4)
-        w = np.clip(w, -2.0, 2.0)
+            # --- 5) Comprobación de llegada ---
+            if dist < 0.05:
+                self.get_logger().info(f"Goal {self.goal_idx+1} reached: ({gx:.2f},{gy:.2f})")
+                self.goal_idx = (self.goal_idx+1) % len(self.goals)
+                # reset integrales
+                self.sum_e_dist = 0.0
+                self.sum_e_ang  = 0.0
 
-        # Publicar a /cmd_vel
-        cmd = Twist()
-        cmd.linear.x = float(v)
-        cmd.angular.z = float(w)
-        self.cmd_pub.publish(cmd)
+            # --- 6) Saturación ---
+            v = float(np.clip(u_dist, -0.4, 0.4))
+            w = float(np.clip(u_ang , -2.0, 2.0))
 
-    def normalize_angle(self, angle):
-        return np.arctan2(np.sin(angle), np.cos(angle))
+            # --- 7) Publicar cmd_vel ---
+            cmd = Twist()
+            cmd.linear.x  = v
+            cmd.angular.z = w
+            self.cmd_pub.publish(cmd)
 
+            # --- 8) Log de depuración cada 1s ---
+            if hasattr(self, '_log_timer'):
+                if (now - self._log_timer).nanoseconds * 1e-9 > 1.0:
+                    self._log_timer = now
+                    self.get_logger().info(
+                        f"Pose: x={self.X:.2f}, y={self.Y:.2f}, θ={self.Th:.2f} | "
+                        f"e_dist={dist:.2f}, e_ang={e_ang:.2f} | "
+                        f"cmd: v={v:.2f}, w={w:.2f}")
+            else:
+                self._log_timer = now
 
-def main(args=None):
-    rclpy.init(args=args)
+        except Exception:
+            self.get_logger().error("Error en control_loop:\n" + traceback.format_exc())
+
+def main():
+    rclpy.init()
     node = PIDController()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        pass
+        node.get_logger().info("KeyboardInterrupt, cerrando...")
     finally:
         node.destroy_node()
         rclpy.shutdown()
 
-if __name__ == '__main__':
+if __name__=='__main__':
     main()
