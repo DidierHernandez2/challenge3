@@ -1,133 +1,123 @@
 import rclpy
-import math
+import numpy as np
 from rclpy.node import Node
-from geometry_msgs.msg import Twist
 from std_msgs.msg import Float32
+from geometry_msgs.msg import Twist
 
-class ControllerNode(Node):
+class PIDController(Node):
     def __init__(self):
-        super().__init__('controller')
+        super().__init__('pid_control')
 
-        # Parámetros del PID (angular)
-        self.kp = 1.5
-        self.ki = 0.0
-        self.kd = 0.1
+        # === Parámetros del robot ===
+        self.r = 0.05      # Radio de las ruedas (m)
+        self.l = 0.18      # Distancia entre ruedas (m)
+        self.rate_hz = 100
+        self.dt = 1.0 / self.rate_hz
 
-        # Parámetros físicos del robot
-        self.R = 0.05   # Radio de rueda (m)
-        self.L = 0.18   # Distancia entre ruedas (m)
+        # === Estado del robot ===
+        self.X = 0.0
+        self.Y = 0.0
+        self.Th = 0.0
+        self.v_r = 0.0
+        self.v_l = 0.0
 
-        # Estado del robot
-        self.xr = 0.0
-        self.yr = 0.0
-        self.thetar = 0.0
+        # === Objetivo actual ===
+        self.goals = [(2, 0), (2, 2), (0, 2), (0, 0)]
+        self.current_goal_index = 0
 
-        # Variables del PID
-        self.integral_error = 0.0
-        self.prev_error = 0.0
+        # === Errores anteriores ===
+        self.e_dist_prev = 0.0
+        self.e_ang_prev = 0.0
+        self.sum_e_dist = 0.0
+        self.sum_e_ang = 0.0
 
-        # Tiempo anterior
-        self.prev_time = self.get_clock().now()
+        # === PID gains ===
+        self.Kp_dist = 1.5
+        self.Ki_dist = 0.0
+        self.Kd_dist = 0.1
 
-        # Lista de waypoints [x, y]
-        self.waypoints = [
-            [2.0, 0.0],  # Derecha
-            [2.0, 2.0],  # Arriba
-            [0.0, 2.0],  # Izquierda
-            [0.0, 0.0]   # Abajo (cierra el cuadrado)
-        ]
-        self.current_index = 0
+        self.Kp_ang = 4.0
+        self.Ki_ang = 0.0
+        self.Kd_ang = 0.1
 
-        # Subscriptores a encoders
-        self.wr = 0.0
-        self.wl = 0.0
-        self.create_subscription(Float32, 'VelocityEncR', self.encR_callback, 10)
-        self.create_subscription(Float32, 'VelocityEncL', self.encL_callback, 10)
+        # === Subscripciones ===
+        self.sub_r = self.create_subscription(Float32, 'VelocityEncR', self.enc_r_cb, 10)
+        self.sub_l = self.create_subscription(Float32, 'VelocityEncL', self.enc_l_cb, 10)
 
-        # Publicador a /cmd_vel
-        self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        # === Publicador de velocidades ===
+        self.cmd_pub = self.create_publisher(Twist, 'cmd_vel', 10)
 
-        # Timer
-        self.create_timer(0.1, self.control_loop)
+        # === Timer principal ===
+        self.timer = self.create_timer(self.dt, self.control_loop)
 
-    def encR_callback(self, msg):
-        self.wr = msg.data
+    def enc_r_cb(self, msg):
+        self.v_r = self.r * msg.data
 
-    def encL_callback(self, msg):
-        self.wl = msg.data
+    def enc_l_cb(self, msg):
+        self.v_l = self.r * msg.data
+
+    def update_odometry(self):
+        V = 0.5 * (self.v_r + self.v_l)
+        Omega = (1.0 / self.l) * (self.v_r - self.v_l)
+
+        self.X += V * np.cos(self.Th) * self.dt
+        self.Y += V * np.sin(self.Th) * self.dt
+        self.Th += Omega * self.dt
 
     def control_loop(self):
-        now = self.get_clock().now()
-        dt = (now - self.prev_time).nanoseconds * 1e-9
-        self.prev_time = now
+        self.update_odometry()
 
-        # Evitar división por cero
-        if dt == 0:
-            return
+        goal_x, goal_y = self.goals[self.current_goal_index]
 
-        # Calcular velocidades lineales de ruedas
-        vL = self.R * self.wl
-        vR = self.R * self.wr
+        dx = goal_x - self.X
+        dy = goal_y - self.Y
+        distance = np.hypot(dx, dy)
+        angle_to_goal = np.arctan2(dy, dx)
+        angle_error = self.normalize_angle(angle_to_goal - self.Th)
 
-        # Velocidades del robot
-        v = (vR + vL) / 2
-        w = (vR - vL) / self.L
+        # Control de distancia
+        self.sum_e_dist += distance * self.dt
+        d_dist = (distance - self.e_dist_prev) / self.dt
+        v = self.Kp_dist * distance + self.Ki_dist * self.sum_e_dist + self.Kd_dist * d_dist
 
-        # Actualizar posición del robot
-        self.xr += v * math.cos(self.thetar) * dt
-        self.yr += v * math.sin(self.thetar) * dt
-        self.thetar += w * dt
-        self.thetar = self.normalize_angle(self.thetar)
+        # Control de orientación
+        self.sum_e_ang += angle_error * self.dt
+        d_ang = (angle_error - self.e_ang_prev) / self.dt
+        w = self.Kp_ang * angle_error + self.Ki_ang * self.sum_e_ang + self.Kd_ang * d_ang
 
-        if self.current_index >= len(self.waypoints):
-            self.stop_robot()
-            return
+        self.e_dist_prev = distance
+        self.e_ang_prev = angle_error
 
-        # Objetivo actual
-        goal = self.waypoints[self.current_index]
-        dx = goal[0] - self.xr
-        dy = goal[1] - self.yr
+        # Comprobación de llegada
+        if distance < 0.05:
+            self.get_logger().info(f"Goal {self.current_goal_index+1} reached!")
+            self.current_goal_index += 1
+            if self.current_goal_index >= len(self.goals):
+                self.get_logger().info("Trajectory complete.")
+                v = 0.0
+                w = 0.0
+                self.current_goal_index = 0  # O quitar si solo quieres hacer una vuelta
 
-        rho = math.hypot(dx, dy)
-        angle_to_goal = math.atan2(dy, dx)
-        alpha = self.normalize_angle(angle_to_goal - self.thetar)
-
-        # Control lineal proporcional
-        linear_speed = 0.2 * rho
-
-        # Control angular PID
-        error = alpha
-        self.integral_error += error * dt
-        derivative = (error - self.prev_error) / dt
-        angular_speed = 0.5 * (self.kp * error + self.ki * self.integral_error + self.kd * derivative)
-        self.prev_error = error
-
-        # Comando de velocidad
+        # Publicar velocidades
         cmd = Twist()
-        cmd.linear.x = max(min(linear_speed, 0.5), -0.5)
-        cmd.angular.z = max(min(angular_speed, 2.0), -2.0)
-        self.cmd_vel_pub.publish(cmd)
-
-        # Verificación de llegada
-        if rho < 0.1:
-            self.current_index += 1
-            self.get_logger().info(f"Waypoint {self.current_index} alcanzado.")
-
-    def stop_robot(self):
-        cmd = Twist()
-        self.cmd_vel_pub.publish(cmd)
-        self.get_logger().info("Todos los waypoints alcanzados.")
+        cmd.linear.x = float(np.clip(v, -0.4, 0.4))       # Saturación de seguridad
+        cmd.angular.z = float(np.clip(w, -2.0, 2.0))
+        self.cmd_pub.publish(cmd)
 
     def normalize_angle(self, angle):
-        while angle > math.pi:
-            angle -= 2 * math.pi
-        while angle < -math.pi:
-            angle += 2 * math.pi
-        return angle
+        return np.arctan2(np.sin(angle), np.cos(angle))
+
 
 def main(args=None):
     rclpy.init(args=args)
-    node = ControllerNode()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+    node = PIDController()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+if __name__ == '__main__':
+    main()
