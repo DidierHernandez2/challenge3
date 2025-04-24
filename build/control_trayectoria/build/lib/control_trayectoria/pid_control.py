@@ -10,7 +10,7 @@ from rclpy.qos import qos_profile_sensor_data
 def normalize_angle(angle):
     return np.arctan2(np.sin(angle), np.cos(angle))
 
-class SquarePIDController(Node):
+class SquarePController(Node):
     def __init__(self):
         super().__init__('pid_control')  # paquete control_trayectoria, archivo pid_control.py
 
@@ -23,23 +23,13 @@ class SquarePIDController(Node):
         self.Y = 0.0
         self.Th = 0.0
 
-        # Encoder-measured velocities
+        # Measured wheel velocities
         self.v_r = 0.0
         self.v_l = 0.0
 
-        # PID gains for linear velocity
-        self.Kp_v = 1.0
-        self.Ki_v = 0.0
-        self.Kd_v = 0.1
-        self.sum_e_v = 0.0
-        self.e_v_prev = 0.0
-
-        # PID gains for angular velocity
-        self.Kp_w = 1.0
-        self.Ki_w = 0.0
-        self.Kd_w = 0.1
-        self.sum_e_w = 0.0
-        self.e_w_prev = 0.0
+        # Proportional gains
+        self.Kp_v = 1.0  # linear velocity gain
+        self.Kp_w = 1.0  # angular velocity gain
 
         # Square motion state
         self.segment = 0        # 0..3
@@ -51,23 +41,15 @@ class SquarePIDController(Node):
         # Motion parameters
         self.dist_target = 2.0      # meters forward
         self.angle_target = np.pi/2 # radians turn
-        # Adjusted speeds: make forward faster
-        self.v_des = 0.5            # m/s base (increased linear speed)
-        self.w_des = 0.5            # rad/s base
+        # Reference speeds
+        self.v_des = 0.5            # m/s forward speed
+        self.w_des = 0.5            # rad/s turn speed
 
         # Subscriptions to encoders
         self.sub_encR = self.create_subscription(
-            Float32,
-            'VelocityEncR',
-            self.encR_callback,
-            qos_profile_sensor_data
-        )
+            Float32, 'VelocityEncR', self.encR_callback, qos_profile_sensor_data)
         self.sub_encL = self.create_subscription(
-            Float32,
-            'VelocityEncL',
-            self.encL_callback,
-            qos_profile_sensor_data
-        )
+            Float32, 'VelocityEncL', self.encL_callback, qos_profile_sensor_data)
 
         # Publisher for cmd_vel
         self.cmd_pub = self.create_publisher(Twist, 'cmd_vel', 10)
@@ -76,17 +58,17 @@ class SquarePIDController(Node):
         self.dt = 0.05
         self.create_timer(self.dt, self.control_loop)
 
-        self.get_logger().info('SquarePIDController iniciado con velocidad lineal aumentada.')
+        self.get_logger().info('SquarePController iniciado con control P únicamente.')
 
     def encR_callback(self, msg: Float32):
-        # Convert encoder reading to linear wheel speed
+        # Convert encoder reading (rad/s) to linear m/s
         self.v_r = msg.data * self.r
 
     def encL_callback(self, msg: Float32):
         self.v_l = msg.data * self.r
 
     def control_loop(self):
-        # Compute real velocities
+        # Compute actual velocities
         V_real     = 0.5 * (self.v_r + self.v_l)
         Omega_real = (self.v_r - self.v_l) / self.L
 
@@ -95,13 +77,13 @@ class SquarePIDController(Node):
         self.Y  += V_real * np.sin(self.Th) * self.dt
         self.Th = normalize_angle(self.Th + Omega_real * self.dt)
 
-        # Compute distance and angle progress
+        # Compute progress
         dx = self.X - self.X0
         dy = self.Y - self.Y0
         dist = np.hypot(dx, dy)
         dTh = normalize_angle(self.Th - self.Th0)
 
-        # Phase switching logic
+        # Phase switching
         if self.phase == 'forward':
             if dist >= self.dist_target:
                 self.phase = 'turn'
@@ -115,7 +97,7 @@ class SquarePIDController(Node):
                 self.Y0 = self.Y
                 self.get_logger().info(f"Segmento {self.segment}: turn completo")
 
-        # Set reference speeds based on phase
+        # Reference speeds
         if self.phase == 'forward':
             v_ref = self.v_des
             w_ref = 0.0
@@ -123,23 +105,11 @@ class SquarePIDController(Node):
             v_ref = 0.0
             w_ref = self.w_des * np.sign(dTh)
 
-        # PID control for linear velocity
+        # P-control
         e_v = v_ref - V_real
-        self.sum_e_v += e_v * self.dt
-        d_e_v = (e_v - self.e_v_prev) / self.dt
-        v_cmd = (self.Kp_v * e_v + self.Ki_v * self.sum_e_v + self.Kd_v * d_e_v)
-        self.e_v_prev = e_v
-
-        # PID control for angular velocity
         e_w = w_ref - Omega_real
-        self.sum_e_w += e_w * self.dt
-        d_e_w = (e_w - self.e_w_prev) / self.dt
-        w_cmd = (self.Kp_w * e_w + self.Ki_w * self.sum_e_w + self.Kd_w * d_e_w)
-        self.e_w_prev = e_w
-
-        # Saturate commands
-        v_cmd = float(np.clip(v_cmd, -self.v_des, self.v_des))
-        w_cmd = float(np.clip(w_cmd, -self.w_des, self.w_des))
+        v_cmd = float(np.clip(self.Kp_v * e_v, -self.v_des, self.v_des))
+        w_cmd = float(np.clip(self.Kp_w * e_w, -self.w_des, self.w_des))
 
         # Publish cmd_vel
         cmd = Twist()
@@ -150,7 +120,7 @@ class SquarePIDController(Node):
 
 def main():
     rclpy.init()
-    node = SquarePIDController()
+    node = SquarePController()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
