@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32
@@ -10,117 +9,101 @@ from rclpy.qos import qos_profile_sensor_data
 def normalize_angle(angle):
     return np.arctan2(np.sin(angle), np.cos(angle))
 
-class SquarePController(Node):
+class PIDControl(Node):
     def __init__(self):
-        super().__init__('pid_control')  # paquete control_trayectoria, archivo pid_control.py
+        super().__init__('pid_control')  # Nodo y archivo pid_control.py en paquete control_trayectoria
 
-        # Robot parameters
-        self.r = 0.05  # wheel radius (m)
-        self.L = 0.18  # wheel separation (m)
+        # Parámetros cinemáticos del robot
+        self.r = 0.05  # radio de rueda (m)
+        self.L = 0.18  # distancia entre ruedas (m)
 
-        # Estimated pose
-        self.X = 0.0
-        self.Y = 0.0
-        self.Th = 0.0
+        # Estado interno de la pose
+        self.x = 0.0
+        self.y = 0.0
+        self.th = 0.0
 
-        # Measured wheel velocities
+        # Velocidades medidas por encoders
         self.v_r = 0.0
         self.v_l = 0.0
 
-        # Proportional gains
-        self.Kp_v = 1.0  # linear velocity gain
-        self.Kp_w = 1.0  # angular velocity gain
+        # Ganancias proporcionales
+        self.Kp_rho = 0.8   # ganancia para distancia
+        self.Kp_alpha = 4.0 # ganancia para orientación
 
-        # Square motion state
-        self.segment = 0        # 0..3
-        self.phase = 'forward'  # 'forward' or 'turn'
-        self.X0 = 0.0
-        self.Y0 = 0.0
-        self.Th0 = 0.0
+        # Integral de errores (para PI si lo extiendes)
+        self.sum_rho = 0.0
+        self.sum_alpha = 0.0
 
-        # Motion parameters
-        self.dist_target = 2.0      # meters forward
-        self.angle_target = np.pi/2 # radians turn
-        # Reference speeds
-        self.v_des = 0.5            # m/s forward speed
-        self.w_des = 0.5            # rad/s turn speed
+        # Waypoints de un cuadrado de lado 2 m
+        self.waypoints = [(2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]
+        self.current_wp = 0
 
-        # Subscriptions to encoders
+        # Tolerancias y temporización
+        self.dist_tol = 0.05  # metros
+        self.dt = 0.05        # periodo de control (20 Hz)
+
+        # Suscripciones a encoders
         self.sub_encR = self.create_subscription(
             Float32, 'VelocityEncR', self.encR_callback, qos_profile_sensor_data)
         self.sub_encL = self.create_subscription(
             Float32, 'VelocityEncL', self.encL_callback, qos_profile_sensor_data)
 
-        # Publisher for cmd_vel
+        # Publicador de comandos de velocidad
         self.cmd_pub = self.create_publisher(Twist, 'cmd_vel', 10)
 
-        # Control loop timer at 20 Hz
-        self.dt = 0.05
+        # Timer de control
         self.create_timer(self.dt, self.control_loop)
-
-        self.get_logger().info('SquarePController iniciado con control P únicamente.')
+        self.get_logger().info('PIDControl iniciado: control P de pose con square trajectory.')
 
     def encR_callback(self, msg: Float32):
-        # Convert encoder reading (rad/s) to linear m/s
+        # Convierte velocidad angular (rad/s) a velocidad lineal en rueda (m/s)
         self.v_r = msg.data * self.r
 
     def encL_callback(self, msg: Float32):
         self.v_l = msg.data * self.r
 
     def control_loop(self):
-        # Compute actual velocities
-        V_real     = 0.5 * (self.v_r + self.v_l)
+        # Velocidades reales del robot
+        V_real = 0.5 * (self.v_r + self.v_l)
         Omega_real = (self.v_r - self.v_l) / self.L
 
-        # Integrate pose
-        self.X  += V_real * np.cos(self.Th) * self.dt
-        self.Y  += V_real * np.sin(self.Th) * self.dt
-        self.Th = normalize_angle(self.Th + Omega_real * self.dt)
+        # Integración de la pose
+        self.x += V_real * np.cos(self.th) * self.dt
+        self.y += V_real * np.sin(self.th) * self.dt
+        self.th = normalize_angle(self.th + Omega_real * self.dt)
 
-        # Compute progress
-        dx = self.X - self.X0
-        dy = self.Y - self.Y0
-        dist = np.hypot(dx, dy)
-        dTh = normalize_angle(self.Th - self.Th0)
+        # Cálculo de errores hacia waypoint actual
+        gx, gy = self.waypoints[self.current_wp]
+        dx = gx - self.x
+        dy = gy - self.y
+        rho = np.hypot(dx, dy)
+        alpha = normalize_angle(np.arctan2(dy, dx) - self.th)
 
-        # Phase switching
-        if self.phase == 'forward':
-            if dist >= self.dist_target:
-                self.phase = 'turn'
-                self.Th0 = self.Th
-                self.get_logger().info(f"Segmento {self.segment+1}: forward completo")
-        else:  # 'turn'
-            if abs(dTh) >= self.angle_target:
-                self.phase = 'forward'
-                self.segment = (self.segment + 1) % 4
-                self.X0 = self.X
-                self.Y0 = self.Y
-                self.get_logger().info(f"Segmento {self.segment}: turn completo")
+        # Avance al siguiente waypoint si se cumple tolerancia
+        if rho < self.dist_tol:
+            self.get_logger().info(f"Waypoint {self.current_wp} alcanzado: ({self.x:.2f}, {self.y:.2f})")
+            self.current_wp = (self.current_wp + 1) % len(self.waypoints)
+            rho = 0.0
+            alpha = 0.0
+            self.sum_rho = 0.0
+            self.sum_alpha = 0.0
 
-        # Reference speeds
-        if self.phase == 'forward':
-            v_ref = self.v_des
-            w_ref = 0.0
-        else:
-            v_ref = 0.0
-            w_ref = self.w_des * np.sign(dTh)
+        # Velocidades de referencia (P) para pose
+        # v_ref = Kp_rho * rho
+        # w_ref = Kp_alpha * alpha
+        v_cmd = float(np.clip(self.Kp_rho * rho, -0.5, 0.5))
+        w_cmd = float(np.clip(self.Kp_alpha * alpha, -1.0, 1.0))
 
-        # P-control
-        e_v = v_ref - V_real
-        e_w = w_ref - Omega_real
-        v_cmd = float(np.clip(self.Kp_v * e_v, -self.v_des, self.v_des))
-        w_cmd = float(np.clip(self.Kp_w * e_w, -self.w_des, self.w_des))
-
-        # Publish cmd_vel
+        # Publicar comando
         cmd = Twist()
-        cmd.linear.x  = v_cmd
+        cmd.linear.x = v_cmd
         cmd.angular.z = w_cmd
         self.cmd_pub.publish(cmd)
 
 
 def main():
     rclpy.init()
-    node = SquarePController()
+    node = PIDControl()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
